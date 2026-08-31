@@ -1,0 +1,36 @@
+# Python pycache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS System Files
+.DS_Store
+Thumbs.db
+
+# Scraped Output Files & Logs
+urls.txt
+*.log
+scraped_products.json
+scraped_products.md
+amazon_products_dataset.json
+amazon_product_specs_for_ai.md
+hand_soap.json
+hydration_powder.json
+whey_protein.json
+
+# Environment Variables & Secrets
+.env
+.env.local

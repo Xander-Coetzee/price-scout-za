@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amazon Product Scanner & AI Spec Evaluator</title>
+    <!-- Google Fonts: Outfit & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="glow-bg"></div>
+
+    <header class="app-header">
+        <div class="header-container">
+            <div class="logo">
+                <i class="fa-solid fa-microchip logo-icon"></i>
+                <div class="logo-text">
+                    <span class="logo-title">AmazonSpec<span class="gradient-text">AI</span></span>
+                    <span class="logo-subtitle">Data Scanner & Spec Comparison Engine</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="btnDownloadJson" class="btn btn-secondary" title="Download JSON Dataset File">
+                    <i class="fa-solid fa-file-code"></i> Export JSON
+                </button>
+                <button id="btnDownloadMd" class="btn btn-secondary" title="Download Markdown Specs File for AI">
+                    <i class="fa-solid fa-file-markdown"></i> Export Specs for AI (.md)
+                </button>
+                <button id="btnCopyPrompt" class="btn btn-outline" title="Copy LLM Prompt & Specs to Clipboard">
+                    <i class="fa-solid fa-copy"></i> Copy AI Prompt
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- Hero Search & Scan Controls -->
+        <section class="hero-section glass-panel">
+            <div class="hero-header">
+                <h2>Scan Amazon Products & Compare with AI</h2>
+                <p>Paste Amazon URLs, ASINs, or product model names below. Extract technical specifications, pricing, and bullet points into AI-ready Markdown & JSON files, or run instant AI decision analysis.</p>
+            </div>
+
+            <!-- Preset Quick Loaders -->
+            <div class="preset-pills">
+                <span class="preset-label"><i class="fa-solid fa-wand-magic-sparkles"></i> Try Preset Comparison:</span>
+                <button class="preset-btn" data-preset="protein"><i class="fa-solid fa-dumbbell"></i> Whey Protein Powder</button>
+                <button class="preset-btn" data-preset="laptops"><i class="fa-solid fa-laptop"></i> Laptops</button>
+                <button class="preset-btn" data-preset="headphones"><i class="fa-solid fa-headphones"></i> ANC Headphones</button>
+                <button class="preset-btn" data-preset="watches"><i class="fa-solid fa-clock"></i> Smartwatches</button>
+            </div>
+
+            <div class="input-grid">
+                <div class="input-group">
+                    <label for="urlInput"><i class="fa-solid fa-list-check"></i> Paste Copied Amazon Tab URLs / ASINs / Search Keywords:</label>
+                    <textarea id="urlInput" rows="5" placeholder="Paste all your open Amazon tab URLs here at once!&#10;e.g.&#10;https://www.amazon.com/dp/B000QSNYGI&#10;https://www.amazon.com/dp/B002DYIZEO&#10;https://www.amazon.com/dp/B00EP9OMC6"></textarea>
+                </div>
+                <div class="input-group">
+                    <label for="contextInput"><i class="fa-solid fa-bullseye"></i> AI Goal / Evaluation Context:</label>
+                    <textarea id="contextInput" rows="5" placeholder="e.g. Which product gives me the absolute best bang for buck (most protein per dollar and lowest cost per serving)?"></textarea>
+                    
+                    <!-- Quick Context Pills -->
+                    <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-size: 11px; color: #9ca3af; align-self: center;">Quick Goals:</span>
+                        <button type="button" class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="document.getElementById('contextInput').value='Which product offers the best bang for buck (highest protein per dollar and lowest cost per serving)?'">💪 Best Bang for Buck</button>
+                        <button type="button" class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="document.getElementById('contextInput').value='Find the overall cheapest option with solid customer ratings.'">💰 Lowest Price</button>
+                        <button type="button" class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="document.getElementById('contextInput').value='Find the highest quality premium formula regardless of price.'">🏆 Top Premium Specs</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="action-bar">
+                <button id="btnScan" class="btn btn-primary btn-large">
+                    <i class="fa-solid fa-magnifying-glass"></i> Scan & Extract Product Specs
+                </button>
+                <button id="btnCompare" class="btn btn-accent btn-large" disabled>
+                    <i class="fa-solid fa-brain"></i> Evaluate Best Product with AI
+                </button>
+            </div>
+        </section>
+
+        <!-- Loading Overlay / Spinner -->
+        <div id="loader" class="loader-container hidden">
+            <div class="spinner"></div>
+            <p id="loaderText">Scanning Amazon products and extracting technical specifications...</p>
+        </div>
+
+        <!-- AI Recommendation Winner Banner -->
+        <section id="aiResultSection" class="ai-result-section glass-panel hidden">
+            <div class="ai-result-header">
+                <div class="winner-badge"><i class="fa-solid fa-trophy"></i> AI WINNER RECOMMENDATION</div>
+                <h3 id="winnerTitle">Product Title</h3>
+            </div>
+            
+            <div class="ai-grid">
+                <div class="ai-card reasoning-card">
+                    <h4><i class="fa-solid fa-lightbulb"></i> Analysis & Recommendation Logic</h4>
+                    <div id="reasoningText" class="markdown-body"></div>
+                </div>
+
+                <div class="ai-card verdict-card">
+                    <h4><i class="fa-solid fa-circle-check"></i> Final Verdict & Buying Advice</h4>
+                    <p id="verdictText"></p>
+                    <div id="bestValueBadge" class="best-value-box">
+                        <i class="fa-solid fa-piggy-bank"></i>
+                        <div>
+                            <strong>Best Value Choice:</strong>
+                            <span id="bestValueTitle"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Score Matrix -->
+            <div class="score-matrix-container">
+                <h4><i class="fa-solid fa-chart-bar"></i> Multi-Dimensional Product Scores</h4>
+                <div id="scoreCardsGrid" class="score-cards-grid"></div>
+            </div>
+        </section>
+
+        <!-- Side-by-Side Spec Comparison Matrix Table -->
+        <section id="specMatrixSection" class="spec-matrix-section glass-panel hidden">
+            <div class="section-title">
+                <h3><i class="fa-solid fa-table-columns"></i> Side-by-Side Specification Matrix</h3>
+                <span class="product-count-tag" id="productCountTag">3 Products</span>
+            </div>
+            <div class="table-wrapper">
+                <table id="specTable" class="spec-table">
+                    <thead>
+                        <tr id="specTableHeader">
+                            <th>Specification</th>
+                        </tr>
+                    </thead>
+                    <tbody id="specTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Product Cards Grid -->
+        <section id="productCardsSection" class="product-cards-section hidden">
+            <div class="section-title">
+                <h3><i class="fa-solid fa-boxes-stacked"></i> Scanned Product Cards</h3>
+            </div>
+            <div id="productGrid" class="product-grid"></div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <p>Amazon Product Data Scanner & AI Comparison Tool &bull; Powered by Python & Gemini AI Engine</p>
+    </footer>
+
+    <script src="main.js"></script>
+</body>
+</html>
