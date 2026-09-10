@@ -71,25 +71,36 @@ playwright install chromium
 
 ## 🚀 CLI Usage Guide
 
-### 1. Multi-Store Search with 50/50 Split (Amazon + Takealot)
+### 1. Multiple Search Prompts with Auto-Deduplication
+Provide multiple search terms in a single run. The scraper searches all terms while preventing duplicate products:
+```bash
+# Space-separated multiple prompts (50/50 split across Amazon & Takealot)
+python cli.py --search "whey protein" "casein protein" "mass gainer" --limit 30 --max-price 400
+
+# Comma-separated search prompts
+python cli.py --search "whey protein, casein protein" --limit 20
+```
+> *Outputs:* `whey_protein_casein_protein.json` containing 30 unique matching items without any duplicate listings.
+
+### 2. Multi-Store Search with 50/50 Split (Amazon + Takealot)
 Search both stores for items under a price threshold and save valid matching listings:
 ```bash
 python cli.py --search "whey protein" --limit 20 --max-price 400
 ```
 > *Outputs:* `whey_protein.json` containing 10 Amazon listings + 10 Takealot listings under R400.
 
-### 2. Store-Specific Searching (`--source`)
+### 3. Store-Specific Searching (`--source`)
 Search only **Takealot** or only **Amazon**:
 ```bash
-# Takealot only search under R50
-python cli.py --search "hand soap" --source takealot --limit 15 --max-price 50
+# Takealot only multi-prompt search under R50
+python cli.py --search "hand soap" "liquid soap" --source takealot --limit 15 --max-price 50
 
 # Amazon only search under R100
 python cli.py --search "hand soap" --source amazon --limit 15 --max-price 100
 ```
 
-### 3. Scrape Product URLs directly
-Pass specific product URLs via CLI:
+### 4. Scrape Product URLs directly
+Pass specific product URLs via CLI (automatically deduplicated):
 ```bash
 python cli.py -u https://www.amazon.co.za/dp/B0FZTYJ7F6 https://www.takealot.com/usn-hydrotech-whey-900g-vanilla-cookie-dough/PLID73601470 -o my_scraped_items.json
 ```

@@ -138,13 +138,18 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
         "url": target_url
     }
 
+def extract_plid(url_or_input: str) -> Optional[str]:
+    """Extract PLID identifier from Takealot URL or string (e.g. PLID73601470)."""
+    if not url_or_input:
+        return None
+    match = re.search(r'PLID\d+', url_or_input, re.IGNORECASE)
+    return match.group(0).upper() if match else None
+
 def search_takealot_product_urls(query: str, target_count: int = 25, max_price: Optional[float] = None, min_price: Optional[float] = None) -> List[str]:
-    """Collects product URLs from Takealot search results."""
-    search_url = f"https://www.takealot.com/all?qsearch={query.replace(' ', '+')}"
-    print(f"[*] Navigating Takealot search: {search_url}")
-    
+    """Collects product URLs from Takealot search results across pagination pages."""
     urls = []
     seen = set()
+    page_num = 1
     
     from playwright.sync_api import sync_playwright
     try:
@@ -152,24 +157,37 @@ def search_takealot_product_urls(query: str, target_count: int = 25, max_price: 
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             page = context.new_page()
-            page.goto(search_url, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(2000)
 
-            link_elems = page.query_selector_all('a[href*="/PLID"]')
-            for l in link_elems:
-                href = l.get_attribute('href')
-                if href:
-                    if href.startswith('/'):
-                        href = f"https://www.takealot.com{href}"
-                    clean = href.split('?')[0]
-                    if clean not in seen:
-                        seen.add(clean)
-                        urls.append(clean)
-                        if len(urls) >= target_count:
-                            break
+            while len(urls) < target_count and page_num <= 10:
+                search_url = f"https://www.takealot.com/all?qsearch={query.replace(' ', '+')}&page={page_num}"
+                if page_num == 1:
+                    print(f"[*] Navigating Takealot search: {search_url}")
+                page.goto(search_url, wait_until="networkidle", timeout=30000)
+                page.wait_for_timeout(1500)
+
+                link_elems = page.query_selector_all('a[href*="/PLID"]')
+                new_links_count = 0
+                for l in link_elems:
+                    href = l.get_attribute('href')
+                    if href:
+                        if href.startswith('/'):
+                            href = f"https://www.takealot.com{href}"
+                        clean = href.split('?')[0]
+                        plid = extract_plid(clean) or clean
+                        if plid not in seen:
+                            seen.add(plid)
+                            urls.append(clean)
+                            new_links_count += 1
+                            if len(urls) >= target_count:
+                                break
+
+                if new_links_count == 0:
+                    break
+                page_num += 1
                             
             browser.close()
     except Exception as e:
         print(f"[!] Takealot search error: {e}")
         
     return urls
+

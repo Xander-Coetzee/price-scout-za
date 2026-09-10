@@ -23,14 +23,12 @@ Thumbs.db
 # Scraped Output Files & Logs
 urls.txt
 *.log
-scraped_products.json
-scraped_products.md
-amazon_products_dataset.json
-amazon_product_specs_for_ai.md
-hand_soap.json
-hydration_powder.json
-whey_protein.json
+*.json
+*.md
+!README.md
+!examples/*.json
 
 # Environment Variables & Secrets
 .env
 .env.local
+

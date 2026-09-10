@@ -4,18 +4,32 @@ import sys
 import time
 import re
 import json
-from typing import List, Dict, Any
-from scraper.amazon_scraper import batch_fetch_amazon_products, extract_all_amazon_urls, unwrap_amazon_url, fetch_amazon_product, parse_price_number
-from scraper.takealot_scraper import fetch_takealot_product, search_takealot_product_urls
+from typing import List, Dict, Any, Union
+from scraper.amazon_scraper import batch_fetch_amazon_products, extract_all_amazon_urls, unwrap_amazon_url, fetch_amazon_product, parse_price_number, extract_asin
+from scraper.takealot_scraper import fetch_takealot_product, search_takealot_product_urls, extract_plid
 from exporter.data_exporter import export_all_metadata
 
-def generate_default_filename(query: str, ext: str = "json") -> str:
-    """Generate clean output filename from search query string (e.g. 'whey protein' -> 'whey_protein.json')."""
-    clean = re.sub(r'[^a-zA-Z0-9]+', '_', query.strip().lower()).strip('_')
-    return f"{clean}.{ext}" if clean else f"scraped_products.{ext}"
+def generate_default_filename(queries: Union[List[str], str], ext: str = "json") -> str:
+    """Generate clean output filename from one or more search query strings (e.g. ['whey', 'casein'] -> 'whey_casein.json')."""
+    if isinstance(queries, str):
+        queries = [queries]
+    cleaned_parts = []
+    for q in queries:
+        c = re.sub(r'[^a-zA-Z0-9]+', '_', q.strip().lower()).strip('_')
+        if c:
+            cleaned_parts.append(c)
+    if not cleaned_parts:
+        return f"scraped_products.{ext}"
+    combined = "_".join(cleaned_parts)
+    if len(combined) > 40:
+        combined = combined[:40].rstrip('_')
+    return f"{combined}.{ext}"
 
-def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: float = None, min_price: float = None, target_count: int = 25) -> List[str]:
+def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: float = None, min_price: float = None, target_count: int = 25, seen_ids: set = None) -> List[str]:
     """Navigates Amazon search pages and collects unique candidate product links."""
+    if seen_ids is None:
+        seen_ids = set()
+
     refinement_param = ""
     if max_price is not None and min_price is not None:
         min_cents = int(min_price * 100)
@@ -29,7 +43,6 @@ def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: flo
         refinement_param = f"&refinements=p_36%3A{min_cents}-"
 
     urls = []
-    seen = set()
     page_num = 1
 
     try:
@@ -52,10 +65,12 @@ def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: flo
                             if href.startswith('/'):
                                 href = f"https://www.{domain}{href}"
                             clean = unwrap_amazon_url(href)
-                            if clean and clean not in seen:
-                                seen.add(clean)
+                            asin = extract_asin(clean) or clean
+                            if clean and asin not in seen_ids and clean not in urls:
                                 urls.append(clean)
                                 new_count += 1
+                                if len(urls) >= target_count:
+                                    break
 
                     if new_count == 0:
                         break
@@ -65,20 +80,33 @@ def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: flo
 
             browser.close()
     except Exception as e:
-        print(f"[!] Search error: {e}")
+        print(f"[!] Amazon search error: {e}")
 
     return urls
 
-def run_multi_store_search(query: str, limit: int = 10, source: str = "both", max_price: float = None, min_price: float = None, api_key: str = "", output_file: str = "") -> List[Dict[str, Any]]:
-    """Automates multi-store search (Amazon + Takealot) with configurable 50/50 split."""
+def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, source: str = "both", max_price: float = None, min_price: float = None, api_key: str = "", output_file: str = "") -> List[Dict[str, Any]]:
+    """Automates multi-store search (Amazon + Takealot) with multi-query support and automatic deduplication."""
+    if isinstance(queries, str):
+        queries = [queries]
+        
+    # Clean & normalize query list
+    clean_queries = []
+    for q in queries:
+        for part in q.split(','):
+            cleaned = part.strip()
+            if cleaned and cleaned not in clean_queries:
+                clean_queries.append(cleaned)
+
     if not output_file:
-        output_file = generate_default_filename(query)
+        output_file = generate_default_filename(clean_queries)
 
     filter_desc = f" (Max Price: <= {max_price})" if max_price is not None else ""
-    print(f"[*] Starting multi-store search for '{query}'{filter_desc}...")
-    print(f"    Source Mode: {source.upper()} | Target Goal: Save exactly {limit} valid products into '{output_file}'.\n")
+    query_display = ", ".join(f"'{q}'" for q in clean_queries)
+    print(f"[*] Starting multi-store search for {query_display}{filter_desc}...")
+    print(f"    Source Mode: {source.upper()} | Target Goal: Save exactly {limit} UNIQUE products into '{output_file}'.\n")
 
     valid_products = []
+    seen_identifiers = set()
     amazon_target = limit
     takealot_target = limit
 
@@ -87,79 +115,135 @@ def run_multi_store_search(query: str, limit: int = 10, source: str = "both", ma
         takealot_target = limit - amazon_target
         print(f"    -> 50/50 Split Allocation: {amazon_target} Amazon products + {takealot_target} Takealot products = {limit} Total\n")
 
-    # 1. Fetch Amazon Listings
+    # 1. Fetch Amazon Listings across queries
     if source.lower() in ["amazon", "both"] and amazon_target > 0:
-        print(f"--- [ FETCHING AMAZON LISTINGS (Target: {amazon_target}) ] ---")
-        amazon_urls = collect_amazon_urls(query, target_count=max(amazon_target * 3, 30), max_price=max_price, min_price=min_price)
+        print(f"--- [ FETCHING AMAZON LISTINGS (Target: {amazon_target} Unique Items) ] ---")
         amazon_valid = []
 
-        for idx, url in enumerate(amazon_urls, 1):
+        for q_idx, q in enumerate(clean_queries, 1):
             if len(amazon_valid) >= amazon_target:
                 break
-            try:
-                prod = fetch_amazon_product(url, api_key=api_key)
-                prod["source"] = "Amazon"
-                raw_price = prod.get('price', '')
-                num_price = parse_price_number(raw_price)
+            
+            if len(clean_queries) > 1:
+                print(f"\n[Amazon Query {q_idx}/{len(clean_queries)}]: Searching for '{q}'...")
 
-                if max_price is not None and num_price is not None and num_price > max_price:
-                    print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
+            needed = (amazon_target - len(amazon_valid)) * 3
+            amazon_urls = collect_amazon_urls(q, target_count=max(needed, 25), max_price=max_price, min_price=min_price, seen_ids=seen_identifiers)
+
+            for idx, url in enumerate(amazon_urls, 1):
+                if len(amazon_valid) >= amazon_target:
+                    break
+
+                asin = extract_asin(url)
+                if asin and asin in seen_identifiers:
+                    print(f"  [{idx}/{len(amazon_urls)}] [DUPLICATE SKIPPED]: ASIN [{asin}] already in dataset.")
                     sys.stdout.flush()
                     continue
 
-                if min_price is not None and num_price is not None and num_price < min_price:
-                    print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
+                try:
+                    prod = fetch_amazon_product(url, api_key=api_key)
+                    prod["source"] = "Amazon"
+                    prod_asin = prod.get('asin') or asin
+
+                    # Secondary deduplication check on parsed ASIN
+                    if prod_asin and prod_asin in seen_identifiers:
+                        print(f"  [{idx}/{len(amazon_urls)}] [DUPLICATE SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Already in dataset)")
+                        sys.stdout.flush()
+                        continue
+
+                    raw_price = prod.get('price', '')
+                    num_price = parse_price_number(raw_price)
+
+                    if max_price is not None and num_price is not None and num_price > max_price:
+                        print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
+                        sys.stdout.flush()
+                        continue
+
+                    if min_price is not None and num_price is not None and num_price < min_price:
+                        print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
+                        sys.stdout.flush()
+                        continue
+
+                    if prod_asin:
+                        seen_identifiers.add(prod_asin)
+                    seen_identifiers.add(url)
+
+                    amazon_valid.append(prod)
+                    valid_products.append(prod)
+                    count = len(amazon_valid)
+                    title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
+                    print(f"  [{idx}/{len(amazon_urls)}] [AMAZON {count}/{amazon_target}] Saved: [{prod_asin}] {title_abbr} | Price: {raw_price}")
                     sys.stdout.flush()
-                    continue
 
-                amazon_valid.append(prod)
-                valid_products.append(prod)
-                count = len(amazon_valid)
-                title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
-                print(f"  [{idx}/{len(amazon_urls)}] [AMAZON {count}/{amazon_target}] Saved: [{prod.get('asin')}] {title_abbr} | Price: {raw_price}")
-                sys.stdout.flush()
+                    export_all_metadata(valid_products, filepath=output_file)
+                except Exception as e:
+                    print(f"  [!] Amazon error on {url}: {e}")
+                time.sleep(0.3)
 
-                export_all_metadata(valid_products, filepath=output_file)
-            except Exception as e:
-                print(f"  [!] Amazon error on {url}: {e}")
-            time.sleep(0.3)
-
-    # 2. Fetch Takealot Listings
+    # 2. Fetch Takealot Listings across queries
     if source.lower() in ["takealot", "both"] and takealot_target > 0:
-        print(f"\n--- [ FETCHING TAKEALOT LISTINGS (Target: {takealot_target}) ] ---")
-        takealot_urls = search_takealot_product_urls(query, target_count=max(takealot_target * 3, 30))
+        print(f"\n--- [ FETCHING TAKEALOT LISTINGS (Target: {takealot_target} Unique Items) ] ---")
         takealot_valid = []
 
-        for idx, url in enumerate(takealot_urls, 1):
+        for q_idx, q in enumerate(clean_queries, 1):
             if len(takealot_valid) >= takealot_target:
                 break
-            try:
-                prod = fetch_takealot_product(url)
-                prod["source"] = "Takealot"
-                raw_price = prod.get('price', '')
-                num_price = parse_price_number(raw_price)
 
-                if max_price is not None and num_price is not None and num_price > max_price:
-                    print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod.get('plid')}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
+            if len(clean_queries) > 1:
+                print(f"\n[Takealot Query {q_idx}/{len(clean_queries)}]: Searching for '{q}'...")
+
+            needed = (takealot_target - len(takealot_valid)) * 3
+            takealot_urls = search_takealot_product_urls(q, target_count=max(needed, 25))
+
+            for idx, url in enumerate(takealot_urls, 1):
+                if len(takealot_valid) >= takealot_target:
+                    break
+
+                plid = extract_plid(url)
+                if plid and plid in seen_identifiers:
+                    print(f"  [{idx}/{len(takealot_urls)}] [DUPLICATE SKIPPED]: PLID [{plid}] already in dataset.")
                     sys.stdout.flush()
                     continue
 
-                if min_price is not None and num_price is not None and num_price < min_price:
-                    print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod.get('plid')}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
+                try:
+                    prod = fetch_takealot_product(url)
+                    prod["source"] = "Takealot"
+                    prod_plid = prod.get('plid') or plid
+
+                    # Secondary deduplication check on parsed PLID
+                    if prod_plid and prod_plid in seen_identifiers:
+                        print(f"  [{idx}/{len(takealot_urls)}] [DUPLICATE SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Already in dataset)")
+                        sys.stdout.flush()
+                        continue
+
+                    raw_price = prod.get('price', '')
+                    num_price = parse_price_number(raw_price)
+
+                    if max_price is not None and num_price is not None and num_price > max_price:
+                        print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
+                        sys.stdout.flush()
+                        continue
+
+                    if min_price is not None and num_price is not None and num_price < min_price:
+                        print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
+                        sys.stdout.flush()
+                        continue
+
+                    if prod_plid:
+                        seen_identifiers.add(prod_plid)
+                    seen_identifiers.add(url)
+
+                    takealot_valid.append(prod)
+                    valid_products.append(prod)
+                    count = len(takealot_valid)
+                    title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
+                    print(f"  [{idx}/{len(takealot_urls)}] [TAKEALOT {count}/{takealot_target}] Saved: [{prod_plid}] {title_abbr} | Price: {raw_price}")
                     sys.stdout.flush()
-                    continue
 
-                takealot_valid.append(prod)
-                valid_products.append(prod)
-                count = len(takealot_valid)
-                title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
-                print(f"  [{idx}/{len(takealot_urls)}] [TAKEALOT {count}/{takealot_target}] Saved: [{prod.get('plid')}] {title_abbr} | Price: {raw_price}")
-                sys.stdout.flush()
-
-                export_all_metadata(valid_products, filepath=output_file)
-            except Exception as e:
-                print(f"  [!] Takealot error on {url}: {e}")
-            time.sleep(0.3)
+                    export_all_metadata(valid_products, filepath=output_file)
+                except Exception as e:
+                    print(f"  [!] Takealot error on {url}: {e}")
+                time.sleep(0.3)
 
     return valid_products
 
@@ -167,21 +251,30 @@ def main():
     parser = argparse.ArgumentParser(description="Multi-Store Product Metadata Scraper & Auto URL Collector (Amazon & Takealot)")
     parser.add_argument("-u", "--urls", nargs="+", help="Product URLs to scrape (Amazon or Takealot)")
     parser.add_argument("-f", "--file-input", type=str, help="Text file containing list of product URLs (one per line)")
-    parser.add_argument("-s", "--search", type=str, help="Automate search & collect valid product listings (e.g. --search 'whey protein')")
+    parser.add_argument("-s", "--search", nargs="+", help="One or more search prompts (e.g. --search 'whey' 'creatine' or --search 'whey, creatine')")
     parser.add_argument("--source", type=str, choices=["amazon", "takealot", "both"], default="both", help="Store provider selection: 'amazon', 'takealot', or 'both' for 50/50 split (default 'both')")
-    parser.add_argument("-n", "--limit", type=int, default=10, help="Target number of VALID products to save in output file (default 10)")
+    parser.add_argument("-n", "--limit", type=int, default=10, help="Target number of VALID UNIQUE products to save in output file (default 10)")
     parser.add_argument("-p", "--max-price", type=float, help="Maximum price limit (e.g. --max-price 400 for products under R400 / $400)")
     parser.add_argument("--min-price", type=float, help="Minimum price limit (e.g. --min-price 10)")
     parser.add_argument("-w", "--watch", action="store_true", help="Watch mode: Automatically scrape when urls.txt is updated or downloaded")
-    parser.add_argument("-o", "--output", type=str, help="Output file path (defaults to search query name, e.g. whey_protein.json)")
+    parser.add_argument("-o", "--output", type=str, help="Output file path (defaults to search query name, e.g. whey_creatine.json)")
     parser.add_argument("--api-key", type=str, default="", help="Optional Rainforest API / Scraper API key")
 
     args = parser.parse_args()
 
+    # Parse search queries if provided
+    search_queries = []
+    if args.search:
+        for item in args.search:
+            for part in item.split(','):
+                cleaned = part.strip()
+                if cleaned and cleaned not in search_queries:
+                    search_queries.append(cleaned)
+
     output_filename = args.output
     if not output_filename:
-        if args.search:
-            output_filename = generate_default_filename(args.search)
+        if search_queries:
+            output_filename = generate_default_filename(search_queries)
         else:
             output_filename = "scraped_products.json"
 
@@ -208,22 +301,30 @@ def main():
                         lines = [l.strip() for l in f.readlines() if l.strip()]
                     
                     products = []
+                    seen_watch_ids = set()
                     for u in lines:
+                        asin = extract_asin(u)
+                        plid = extract_plid(u)
+                        unique_key = asin or plid or u
+                        if unique_key in seen_watch_ids:
+                            continue
+                        seen_watch_ids.add(unique_key)
+                        
                         if "takealot.com" in u:
                             products.append(fetch_takealot_product(u))
                         else:
                             products.append(fetch_amazon_product(u, api_key=args.api_key))
                             
                     out_path = export_all_metadata(products, filepath=output_filename)
-                    print(f"[+] Done! Saved to: {os.path.abspath(out_path)}")
+                    print(f"[+] Done! Saved {len(products)} unique products to: {os.path.abspath(out_path)}")
             time.sleep(2)
 
-    if args.search:
+    if search_queries:
         if os.path.exists("urls.txt"):
             os.remove("urls.txt")
             
         products = run_multi_store_search(
-            query=args.search,
+            queries=search_queries,
             limit=args.limit,
             source=args.source,
             max_price=args.max_price,
@@ -233,7 +334,7 @@ def main():
         )
         
         output_path = export_all_metadata(products, filepath=output_filename)
-        print(f"\n[+] SUCCESS! Scraped dataset ({len(products)} products) saved to output file:")
+        print(f"\n[+] SUCCESS! Scraped dataset ({len(products)} unique products) saved to output file:")
         print(f"    -> {os.path.abspath(output_path)}\n")
         sys.exit(0)
 
@@ -250,14 +351,23 @@ def main():
             inputs.append(item)
 
     if not inputs:
-        print("[!] No product URLs provided. Quick Examples:")
-        print("    1. 50/50 Amazon + Takealot Search: python cli.py --search \"whey protein\" --limit 20 --max-price 400")
-        print("    2. Takealot Only Search:          python cli.py --search \"hand soap\" --source takealot --limit 10")
-        print("    3. Amazon Only Search:            python cli.py --search \"hand soap\" --source amazon --limit 10")
+        print("[!] No search prompt or product URLs provided. Quick Examples:")
+        print("    1. Multiple Search Prompts:       python cli.py --search \"whey\" \"creatine\" --limit 20 --max-price 400")
+        print("    2. Comma-separated Prompts:       python cli.py --search \"whey, casein, creatine\" --limit 30")
+        print("    3. Store-Specific Multi-Search:   python cli.py --search \"hand soap\" \"body wash\" --source takealot --limit 10")
         sys.exit(1)
 
+    # Deduplicate direct input list
     products = []
+    seen_direct_ids = set()
     for item in inputs:
+        asin = extract_asin(item)
+        plid = extract_plid(item)
+        unique_key = asin or plid or item
+        if unique_key in seen_direct_ids:
+            continue
+        seen_direct_ids.add(unique_key)
+        
         if "takealot.com" in item:
             products.append(fetch_takealot_product(item))
         else:
@@ -265,8 +375,9 @@ def main():
 
     output_path = export_all_metadata(products, filepath=output_filename)
 
-    print(f"\n[+] SUCCESS! All {len(products)} product metadata consolidated into single file:")
+    print(f"\n[+] SUCCESS! All {len(products)} unique product metadata consolidated into single file:")
     print(f"    -> {os.path.abspath(output_path)}\n")
 
 if __name__ == "__main__":
     main()
+
