@@ -115,23 +115,31 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
         takealot_target = limit - amazon_target
         print(f"    -> 50/50 Split Allocation: {amazon_target} Amazon products + {takealot_target} Takealot products = {limit} Total\n")
 
-    # 1. Fetch Amazon Listings across queries
+    # 1. Fetch Amazon Listings across queries with balanced per-query allocation
     if source.lower() in ["amazon", "both"] and amazon_target > 0:
         print(f"--- [ FETCHING AMAZON LISTINGS (Target: {amazon_target} Unique Items) ] ---")
         amazon_valid = []
+        amazon_candidates_by_query = {}
 
-        for q_idx, q in enumerate(clean_queries, 1):
+        # First Pass: Balanced quota per query
+        for q_idx, q in enumerate(clean_queries):
             if len(amazon_valid) >= amazon_target:
                 break
             
-            if len(clean_queries) > 1:
-                print(f"\n[Amazon Query {q_idx}/{len(clean_queries)}]: Searching for '{q}'...")
+            remaining_queries = len(clean_queries) - q_idx
+            remaining_needed = amazon_target - len(amazon_valid)
+            query_quota = (remaining_needed + remaining_queries - 1) // remaining_queries
+            query_goal = len(amazon_valid) + query_quota
 
-            needed = (amazon_target - len(amazon_valid)) * 3
-            amazon_urls = collect_amazon_urls(q, target_count=max(needed, 25), max_price=max_price, min_price=min_price, seen_ids=seen_identifiers)
+            if len(clean_queries) > 1:
+                print(f"\n[Amazon Query {q_idx + 1}/{len(clean_queries)}]: Searching for '{q}' (Allocated Quota: up to {query_quota} items)...")
+
+            needed = max(query_quota * 4, 30)
+            amazon_urls = collect_amazon_urls(q, target_count=needed, max_price=max_price, min_price=min_price, seen_ids=seen_identifiers)
+            amazon_candidates_by_query[q] = amazon_urls
 
             for idx, url in enumerate(amazon_urls, 1):
-                if len(amazon_valid) >= amazon_target:
+                if len(amazon_valid) >= query_goal or len(amazon_valid) >= amazon_target:
                     break
 
                 asin = extract_asin(url)
@@ -180,23 +188,28 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     print(f"  [!] Amazon error on {url}: {e}")
                 time.sleep(0.3)
 
-    # 2. Fetch Takealot Listings across queries
+    # 2. Fetch Takealot Listings across queries with balanced per-query allocation
     if source.lower() in ["takealot", "both"] and takealot_target > 0:
         print(f"\n--- [ FETCHING TAKEALOT LISTINGS (Target: {takealot_target} Unique Items) ] ---")
         takealot_valid = []
 
-        for q_idx, q in enumerate(clean_queries, 1):
+        for q_idx, q in enumerate(clean_queries):
             if len(takealot_valid) >= takealot_target:
                 break
 
-            if len(clean_queries) > 1:
-                print(f"\n[Takealot Query {q_idx}/{len(clean_queries)}]: Searching for '{q}'...")
+            remaining_queries = len(clean_queries) - q_idx
+            remaining_needed = takealot_target - len(takealot_valid)
+            query_quota = (remaining_needed + remaining_queries - 1) // remaining_queries
+            query_goal = len(takealot_valid) + query_quota
 
-            needed = (takealot_target - len(takealot_valid)) * 3
-            takealot_urls = search_takealot_product_urls(q, target_count=max(needed, 25))
+            if len(clean_queries) > 1:
+                print(f"\n[Takealot Query {q_idx + 1}/{len(clean_queries)}]: Searching for '{q}' (Allocated Quota: up to {query_quota} items)...")
+
+            needed = max(query_quota * 4, 30)
+            takealot_urls = search_takealot_product_urls(q, target_count=needed)
 
             for idx, url in enumerate(takealot_urls, 1):
-                if len(takealot_valid) >= takealot_target:
+                if len(takealot_valid) >= query_goal or len(takealot_valid) >= takealot_target:
                     break
 
                 plid = extract_plid(url)
