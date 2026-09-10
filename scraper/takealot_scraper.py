@@ -42,8 +42,10 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
     if title_el:
         title = title_el.get_text(strip=True)
 
-    # 2. Price
+    # 2. Price & Original Price
     price = "Price unavailable"
+    original_price = ""
+    
     price_el = soup.select_one('span.currency, .buybox-module_price_1wP-n, div[class*="price-module"], span[class*="price"]')
     if price_el:
         price = price_el.get_text(strip=True)
@@ -51,6 +53,11 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
         p_match = re.search(r'R\s*[\d\s,.]+', html_content)
         if p_match:
             price = p_match.group(0).strip()
+
+    # Original / List Price (if on sale / discounted)
+    orig_price_el = soup.select_one('.buybox-module_list-price_2uD8a, span[class*="list-price"], .crossed-out-price, s, del')
+    if orig_price_el:
+        original_price = orig_price_el.get_text(strip=True)
 
     # Normalize price format to R XX.XX
     if price and not price.startswith('R'):
@@ -73,43 +80,102 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
     if img_el:
         image_url = img_el.get('src', '')
 
-    # 5. Product Specs & Details Table (parsed from Product Information container)
+    # 5. Product Specs & Details (Comprehensive extraction of all key-value pairs)
     specs = {}
     brand = ""
     ingredients = ""
     
-    # Takealot key-value pair parsing from Product Information sections
-    info_sections = soup.find_all(['div', 'section'])
+    # Extract from Product Information section & any definition tables
+    info_sections = soup.find_all(['div', 'section', 'table'])
     for sec in info_sections:
-        sec_text = sec.get_text(strip=True, separator='\n')
-        if "Product Information" in sec_text and len(sec_text) < 2000:
-            lines = [l.strip() for l in sec_text.split('\n') if l.strip()]
-            for idx in range(len(lines) - 1):
-                k = lines[idx]
-                v = lines[idx + 1]
-                if k in ["Brand", "Format", "Ingredients", "Volume", "Barcode", "What's in the box", "Warranty", "Gender", "is vegan", "Flavour"]:
+        # Check standard table rows first
+        for row in sec.select('tr'):
+            cols = row.select('th, td')
+            if len(cols) == 2:
+                k = cols[0].get_text(strip=True).rstrip(':')
+                v = cols[1].get_text(strip=True)
+                if k and v and len(k) < 50:
                     specs[k] = v
-                    if k == "Brand" and not brand:
-                        brand = v
-                    if k == "Ingredients" and not ingredients:
-                        ingredients = v
+
+        # Parse Takealot Product Information structured text
+        sec_text = sec.get_text(strip=True, separator='\n')
+        if "Product Information" in sec_text and len(sec_text) < 4000:
+            raw_lines = [l.strip() for l in sec_text.split('\n') if l.strip()]
+            # Known / common Takealot attribute keys
+            known_takealot_keys = {
+                "Brand", "Format", "Ingredients", "Volume", "Barcode", "What's in the box", "Warranty",
+                "Gender", "is vegan", "Flavour", "Flavor", "Serving Size", "Servings per Container",
+                "Skin Type", "Scent", "Colour", "Color", "Material", "Model", "Model Number",
+                "Packed Quantity", "Unit Count", "Assembled Dimensions", "Weight", "Item Weight",
+                "Medicine or Substance Schedule", "Zero Rated VAT", "Allergens", "Dietary Needs",
+                "Country of Origin", "Age Group", "Pack Count", "Storage Instructions"
+            }
+            
+            i = 0
+            while i < len(raw_lines):
+                line = raw_lines[i]
+                if line in known_takealot_keys and i + 1 < len(raw_lines):
+                    val = raw_lines[i + 1]
+                    if val not in known_takealot_keys and len(val) < 400:
+                        specs[line] = val
+                        if line.lower() in ["brand", "brand name"] and not brand:
+                            brand = val
+                        if line.lower() in ["ingredients", "active ingredients", "key ingredients"] and not ingredients:
+                            ingredients = val
+                        i += 2
+                        continue
+                # Also capture any "Key: Value" lines
+                elif ":" in line and len(line) < 150:
+                    parts = line.split(":", 1)
+                    k_clean, v_clean = parts[0].strip(), parts[1].strip()
+                    if k_clean and v_clean and len(k_clean) < 40:
+                        specs[k_clean] = v_clean
+                i += 1
 
     if not brand:
         brand_el = soup.select_one('a[href*="/brand/"], .brand-link')
         if brand_el:
             brand = brand_el.get_text(strip=True)
 
-    # 6. Description
+    # 6. Description, Directions, Safety Warnings & Bullet Points
     description = ""
-    desc_container = soup.find(lambda tag: tag.name in ['div', 'section'] and "Description" in tag.get_text(strip=False))
-    for sec in soup.find_all(['div', 'section']):
-        text = sec.get_text(strip=True, separator=' ')
-        if "Description" in text and len(text) > 30 and len(text) < 3000:
-            description = text.replace("Description", "").strip()
-            break
+    bullet_points = []
+    directions = ""
+    safety_warning = ""
+
+    desc_elem = soup.select_one('div[class*="description"], div[class*="product-description"]')
+    if desc_elem:
+        description = desc_elem.get_text(strip=True, separator=' ')
+        description = re.sub(r'^(Description\s*)+', '', description, flags=re.IGNORECASE).strip()
+        
+        # Extract bullet points from lists in description
+        for li in desc_elem.select('li'):
+            li_text = li.get_text(strip=True)
+            if li_text and len(li_text) > 3 and li_text not in bullet_points:
+                bullet_points.append(li_text)
+
+    # If no explicit <li> tags, parse bullet points from "Key Benefits:" / "Features:" lines
+    if not bullet_points and description:
+        benefit_matches = re.findall(r'(?:[-•*]|\b(?:Benefits?|Features?):\s*)([^\n•*-]+)', description)
+        for bm in benefit_matches[:8]:
+            clean_b = bm.strip()
+            if len(clean_b) > 5 and len(clean_b) < 200:
+                bullet_points.append(clean_b)
+
+    # Directions / Suggested Use extraction
+    if "Suggested Use" in description or "Directions" in description or "Suggested Directions" in description:
+        d_match = re.search(r'(?:Suggested Use|Directions|How to use):?\s*([^.\n]+(?:\.[^.\n]+){0,2})', description, re.IGNORECASE)
+        if d_match:
+            directions = d_match.group(1).strip()
+
+    # Safety Warning / Disclaimer extraction
+    if "Disclaimer" in description or "Warning" in description or "Caution" in description:
+        w_match = re.search(r'(?:Disclaimer|Safety Warning|Warnings?|Caution):?\s*([^.\n]+(?:\.[^.\n]+){0,3})', description, re.IGNORECASE)
+        if w_match:
+            safety_warning = w_match.group(1).strip()
 
     if not ingredients:
-        ingredients = extract_ingredients(soup, description, [], specs)
+        ingredients = extract_ingredients(soup, description, bullet_points, specs)
 
     # Extract PLID / Product ID
     plid = ""
@@ -123,17 +189,17 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
         "title": title or f"Takealot Product ({plid})",
         "brand": brand or "Takealot",
         "price": price,
-        "original_price": "",
+        "original_price": original_price,
         "rating": rating,
         "review_count": review_count,
         "availability": "In stock",
         "image_url": image_url,
         "ingredients": ingredients or "Not specified on main detail page",
         "description": description,
-        "directions": "",
-        "safety_warning": "",
+        "directions": directions,
+        "safety_warning": safety_warning,
         "important_information": "",
-        "bullet_points": [],
+        "bullet_points": bullet_points,
         "specs": specs,
         "url": target_url
     }

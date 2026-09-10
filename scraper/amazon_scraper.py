@@ -283,6 +283,16 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
             if k and v and k not in specs and len(k) < 60:
                 specs[k] = v
 
+    # Variant D: A+ Enhanced Brand Content Tables (.aplus-v2, #aplus)
+    aplus_tables = soup.select(".aplus-v2 table tr, #aplus table tr, #dpx-aplus-product-description_feature_div table tr")
+    for row in aplus_tables:
+        cols = row.select("th, td")
+        if len(cols) == 2:
+            k = cols[0].get_text(strip=True).rstrip(":")
+            v = cols[1].get_text(strip=True).replace('\u200e', '').replace('\u200f', '')
+            if k and v and len(k) < 50 and len(v) < 200 and k not in specs:
+                specs[k] = v
+
     # 7. Product Description, Directions, Safety Warnings & Important Information
     description = ""
     desc_elem = soup.select_one("#productDescription p, #productDescription span, #productDescription")
