@@ -5,7 +5,16 @@ import time
 import re
 import json
 from typing import List, Dict, Any, Union
-from scraper.amazon_scraper import batch_fetch_amazon_products, extract_all_amazon_urls, unwrap_amazon_url, fetch_amazon_product, parse_price_number, extract_asin
+from scraper.amazon_scraper import (
+    batch_fetch_amazon_products,
+    extract_all_amazon_urls,
+    unwrap_amazon_url,
+    fetch_amazon_product,
+    parse_price_number,
+    extract_asin,
+    get_amazon_session,
+    is_valid_amazon_product
+)
 from scraper.takealot_scraper import fetch_takealot_product, search_takealot_product_urls, extract_plid
 from exporter.data_exporter import export_all_metadata
 
@@ -48,8 +57,13 @@ def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: flo
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
 
             while len(urls) < target_count and page_num <= 20:
                 search_url = f"https://www.{domain}/s?k={query.replace(' ', '+')}&page={page_num}{refinement_param}"
@@ -115,6 +129,8 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
         takealot_target = limit - amazon_target
         print(f"    -> 50/50 Split Allocation: {amazon_target} Amazon products + {takealot_target} Takealot products = {limit} Total\n")
 
+    amazon_session = get_amazon_session()
+
     # 1. Fetch Amazon Listings across queries with balanced per-query allocation
     if source.lower() in ["amazon", "both"] and amazon_target > 0:
         print(f"--- [ FETCHING AMAZON LISTINGS (Target: {amazon_target} Unique Items) ] ---")
@@ -149,7 +165,12 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     continue
 
                 try:
-                    prod = fetch_amazon_product(url, api_key=api_key)
+                    prod = fetch_amazon_product(url, api_key=api_key, session=amazon_session)
+                    if not is_valid_amazon_product(prod):
+                        print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{asin}] Invalid / placeholder details.")
+                        sys.stdout.flush()
+                        continue
+
                     prod["source"] = "Amazon"
                     prod_asin = prod.get('asin') or asin
 
@@ -162,15 +183,17 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     raw_price = prod.get('price', '')
                     num_price = parse_price_number(raw_price)
 
-                    if max_price is not None and num_price is not None and num_price > max_price:
-                        print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
-                        sys.stdout.flush()
-                        continue
+                    if max_price is not None:
+                        if num_price is None or num_price > max_price:
+                            print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price '{raw_price}' > max {max_price})")
+                            sys.stdout.flush()
+                            continue
 
-                    if min_price is not None and num_price is not None and num_price < min_price:
-                        print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
-                        sys.stdout.flush()
-                        continue
+                    if min_price is not None:
+                        if num_price is None or num_price < min_price:
+                            print(f"  [{idx}/{len(amazon_urls)}] [SKIPPED]: [{prod_asin}] {prod.get('title')[:36]}... (Price '{raw_price}' < min {min_price})")
+                            sys.stdout.flush()
+                            continue
 
                     if prod_asin:
                         seen_identifiers.add(prod_asin)
@@ -180,18 +203,66 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     valid_products.append(prod)
                     count = len(amazon_valid)
                     title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
-                    print(f"  [{idx}/{len(amazon_urls)}] [AMAZON {count}/{amazon_target}] Saved: [{prod_asin}] {title_abbr} | Price: {raw_price}")
+                    specs_count = len(prod.get('specs', {}))
+                    print(f"  [{idx}/{len(amazon_urls)}] [AMAZON {count}/{amazon_target}] Saved: [{prod_asin}] {title_abbr} | Price: {raw_price} | Specs: {specs_count}")
                     sys.stdout.flush()
 
                     export_all_metadata(valid_products, filepath=output_file)
                 except Exception as e:
                     print(f"  [!] Amazon error on {url}: {e}")
-                time.sleep(0.3)
+                time.sleep(0.2)
+
+        # Second Pass: Deficit Rollover across remaining candidates if goal not reached
+        if len(amazon_valid) < amazon_target:
+            print(f"\n[*] Rollover pass: Filling remaining Amazon deficit ({amazon_target - len(amazon_valid)} items needed)...")
+            for q, urls in amazon_candidates_by_query.items():
+                if len(amazon_valid) >= amazon_target:
+                    break
+                for idx, url in enumerate(urls, 1):
+                    if len(amazon_valid) >= amazon_target:
+                        break
+                    asin = extract_asin(url)
+                    if (asin and asin in seen_identifiers) or url in seen_identifiers:
+                        continue
+                    try:
+                        prod = fetch_amazon_product(url, api_key=api_key, session=amazon_session)
+                        if not is_valid_amazon_product(prod):
+                            continue
+                        prod["source"] = "Amazon"
+                        prod_asin = prod.get('asin') or asin
+                        if prod_asin and prod_asin in seen_identifiers:
+                            continue
+
+                        raw_price = prod.get('price', '')
+                        num_price = parse_price_number(raw_price)
+
+                        if max_price is not None and (num_price is None or num_price > max_price):
+                            continue
+                        if min_price is not None and (num_price is None or num_price < min_price):
+                            continue
+
+                        if prod_asin:
+                            seen_identifiers.add(prod_asin)
+                        seen_identifiers.add(url)
+
+                        amazon_valid.append(prod)
+                        valid_products.append(prod)
+                        count = len(amazon_valid)
+                        title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
+                        specs_count = len(prod.get('specs', {}))
+                        print(f"  [ROLLOVER] [AMAZON {count}/{amazon_target}] Saved: [{prod_asin}] {title_abbr} | Price: {raw_price} | Specs: {specs_count}")
+                        sys.stdout.flush()
+
+                        export_all_metadata(valid_products, filepath=output_file)
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
 
     # 2. Fetch Takealot Listings across queries with balanced per-query allocation
     if source.lower() in ["takealot", "both"] and takealot_target > 0:
         print(f"\n--- [ FETCHING TAKEALOT LISTINGS (Target: {takealot_target} Unique Items) ] ---")
         takealot_valid = []
+        takealot_candidates_by_query = {}
 
         for q_idx, q in enumerate(clean_queries):
             if len(takealot_valid) >= takealot_target:
@@ -207,6 +278,7 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
 
             needed = max(query_quota * 4, 30)
             takealot_urls = search_takealot_product_urls(q, target_count=needed)
+            takealot_candidates_by_query[q] = takealot_urls
 
             for idx, url in enumerate(takealot_urls, 1):
                 if len(takealot_valid) >= query_goal or len(takealot_valid) >= takealot_target:
@@ -232,15 +304,17 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     raw_price = prod.get('price', '')
                     num_price = parse_price_number(raw_price)
 
-                    if max_price is not None and num_price is not None and num_price > max_price:
-                        print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price {raw_price} > max {max_price})")
-                        sys.stdout.flush()
-                        continue
+                    if max_price is not None:
+                        if num_price is None or num_price > max_price:
+                            print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price '{raw_price}' > max {max_price})")
+                            sys.stdout.flush()
+                            continue
 
-                    if min_price is not None and num_price is not None and num_price < min_price:
-                        print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price {raw_price} < min {min_price})")
-                        sys.stdout.flush()
-                        continue
+                    if min_price is not None:
+                        if num_price is None or num_price < min_price:
+                            print(f"  [{idx}/{len(takealot_urls)}] [SKIPPED]: [{prod_plid}] {prod.get('title')[:36]}... (Price '{raw_price}' < min {min_price})")
+                            sys.stdout.flush()
+                            continue
 
                     if prod_plid:
                         seen_identifiers.add(prod_plid)
@@ -250,13 +324,58 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
                     valid_products.append(prod)
                     count = len(takealot_valid)
                     title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
-                    print(f"  [{idx}/{len(takealot_urls)}] [TAKEALOT {count}/{takealot_target}] Saved: [{prod_plid}] {title_abbr} | Price: {raw_price}")
+                    specs_count = len(prod.get('specs', {}))
+                    print(f"  [{idx}/{len(takealot_urls)}] [TAKEALOT {count}/{takealot_target}] Saved: [{prod_plid}] {title_abbr} | Price: {raw_price} | Specs: {specs_count}")
                     sys.stdout.flush()
 
                     export_all_metadata(valid_products, filepath=output_file)
                 except Exception as e:
                     print(f"  [!] Takealot error on {url}: {e}")
-                time.sleep(0.3)
+                time.sleep(0.2)
+
+        # Second Pass for Takealot if deficit remains
+        if len(takealot_valid) < takealot_target:
+            print(f"\n[*] Rollover pass: Filling remaining Takealot deficit ({takealot_target - len(takealot_valid)} items needed)...")
+            for q, urls in takealot_candidates_by_query.items():
+                if len(takealot_valid) >= takealot_target:
+                    break
+                for idx, url in enumerate(urls, 1):
+                    if len(takealot_valid) >= takealot_target:
+                        break
+                    plid = extract_plid(url)
+                    if (plid and plid in seen_identifiers) or url in seen_identifiers:
+                        continue
+                    try:
+                        prod = fetch_takealot_product(url)
+                        prod["source"] = "Takealot"
+                        prod_plid = prod.get('plid') or plid
+                        if prod_plid and prod_plid in seen_identifiers:
+                            continue
+
+                        raw_price = prod.get('price', '')
+                        num_price = parse_price_number(raw_price)
+
+                        if max_price is not None and (num_price is None or num_price > max_price):
+                            continue
+                        if min_price is not None and (num_price is None or num_price < min_price):
+                            continue
+
+                        if prod_plid:
+                            seen_identifiers.add(prod_plid)
+                        seen_identifiers.add(url)
+
+                        takealot_valid.append(prod)
+                        valid_products.append(prod)
+                        count = len(takealot_valid)
+                        title_abbr = prod.get('title', 'Product')[:38] + "..." if len(prod.get('title', '')) > 40 else prod.get('title', 'Product')
+                        specs_count = len(prod.get('specs', {}))
+                        print(f"  [ROLLOVER] [TAKEALOT {count}/{takealot_target}] Saved: [{prod_plid}] {title_abbr} | Price: {raw_price} | Specs: {specs_count}")
+                        sys.stdout.flush()
+
+                        export_all_metadata(valid_products, filepath=output_file)
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
 
     return valid_products
 
@@ -296,6 +415,7 @@ def main():
         print("[*] WATCH MODE ACTIVE. Listening for updates to 'urls.txt' or Downloads/urls.txt...")
         last_mtime = 0
         target_file = args.file_input or "urls.txt"
+        session = get_amazon_session()
         
         while True:
             check_paths = [target_file, os.path.expanduser("~/Downloads/urls.txt")]
@@ -326,7 +446,7 @@ def main():
                         if "takealot.com" in u:
                             products.append(fetch_takealot_product(u))
                         else:
-                            products.append(fetch_amazon_product(u, api_key=args.api_key))
+                            products.append(fetch_amazon_product(u, api_key=args.api_key, session=session))
                             
                     out_path = export_all_metadata(products, filepath=output_filename)
                     print(f"[+] Done! Saved {len(products)} unique products to: {os.path.abspath(out_path)}")
@@ -373,6 +493,7 @@ def main():
     # Deduplicate direct input list
     products = []
     seen_direct_ids = set()
+    session = get_amazon_session()
     for item in inputs:
         asin = extract_asin(item)
         plid = extract_plid(item)
@@ -384,7 +505,7 @@ def main():
         if "takealot.com" in item:
             products.append(fetch_takealot_product(item))
         else:
-            products.append(fetch_amazon_product(item, api_key=args.api_key))
+            products.append(fetch_amazon_product(item, api_key=args.api_key, session=session))
 
     output_path = export_all_metadata(products, filepath=output_filename)
 
@@ -393,4 +514,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

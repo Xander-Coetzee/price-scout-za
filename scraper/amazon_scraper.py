@@ -10,7 +10,8 @@ from urllib.parse import urlparse, unquote
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0"
 ]
 
 def parse_price_number(price_str: str) -> Optional[float]:
@@ -32,24 +33,30 @@ def parse_price_number(price_str: str) -> Optional[float]:
     matches = re.findall(r'\d+(?:\.\d+)?', cleaned)
     if matches:
         try:
-            # Pick the largest numerical match if thousands split by accident (e.g. 1 vs 1349.0)
             numbers = [float(m) for m in matches]
             return max(numbers)
         except ValueError:
             pass
     return None
 
+def clean_price_display(price_str: str) -> str:
+    """Clean unprintable unicode spaces and normalization glitches from raw scraped price."""
+    if not price_str:
+        return ""
+    import unicodedata
+    cleaned = "".join(c for c in price_str if unicodedata.category(c) != 'Cf')
+    cleaned = re.sub(r'[\s\xa0\u202f\u2009\u200b]+', ' ', cleaned).strip()
+    return cleaned
+
 def unwrap_amazon_url(url: str) -> str:
     """Clean Amazon ad tracking redirects (aax-eu...) to extract the clean direct product URL."""
     if not url:
         return ""
     if "/x/c/" in url and "https://" in url.split("/x/c/")[1]:
-        # Extract embedded target URL
         parts = url.split("https://")
         if len(parts) >= 2:
             url = "https://" + parts[-1]
             
-    # Clean query parameters leaving clean /dp/ASIN
     asin = extract_asin(url)
     if asin and ("amazon." in url or "amzn." in url):
         parsed = urlparse(url)
@@ -139,8 +146,25 @@ def get_random_headers() -> Dict[str, str]:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1"
     }
+
+_shared_amazon_session: Optional[requests.Session] = None
+
+def get_amazon_session() -> requests.Session:
+    """Returns a singleton requests Session configured with realistic desktop headers."""
+    global _shared_amazon_session
+    if _shared_amazon_session is None:
+        _shared_amazon_session = requests.Session()
+        _shared_amazon_session.headers.update(get_random_headers())
+    return _shared_amazon_session
 
 def extract_ingredients(soup: BeautifulSoup, description: str, bullet_points: List[str], specs: Dict[str, str]) -> str:
     """Aggressively extracts and consolidates ingredients from all DOM nodes, tables, and text sections."""
@@ -156,7 +180,6 @@ def extract_ingredients(soup: BeautifulSoup, description: str, bullet_points: Li
     imp_elem = soup.select_one("#important-information, #importantInformation, div[data-feature-name='importantInformation']")
     if imp_elem:
         imp_text = imp_elem.get_text(strip=True, separator='\n')
-        # Search for Ingredients sub-sections
         patterns = [
             r'(?:Active\s+)?Ingredients\s*\n+([^\n]+(?:\n+[^\n]+)*?)(?=\n+[A-Z][a-z]+|$)',
             r'Ingredients:?\s*([^\n]+)',
@@ -181,16 +204,65 @@ def extract_ingredients(soup: BeautifulSoup, description: str, bullet_points: Li
     unique = list(dict.fromkeys([i.strip() for i in found_ingredients if i.strip()]))
     return " | ".join(unique) if unique else "Not specified on main detail page"
 
+def is_valid_amazon_product(prod: Dict[str, Any]) -> bool:
+    """Checks whether an extracted product is a legitimate detailed scrape rather than an empty fallback placeholder."""
+    if not prod:
+        return False
+    title = prod.get("title", "").strip()
+    if not title:
+        return False
+    if title.startswith("Amazon Product (") and title.endswith(")"):
+        return False
+    # If title is valid and we have price or specs or bullet points or image
+    has_price = prod.get("price") and prod.get("price") != "Price unavailable"
+    has_specs = bool(prod.get("specs"))
+    has_bullets = bool(prod.get("bullet_points"))
+    has_image = bool(prod.get("image_url"))
+    
+    return bool(has_price or has_specs or has_bullets or has_image)
+
 def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]:
     """Extract all product metadata and technical specs from Amazon product HTML."""
+    if not html_content:
+        asin = extract_asin(source_url) or ""
+        return {
+            "asin": asin,
+            "title": f"Amazon Product ({asin})" if asin else "Amazon Product",
+            "brand": "",
+            "price": "Price unavailable",
+            "original_price": "",
+            "rating": "N/A",
+            "review_count": "0 reviews",
+            "availability": "Unknown",
+            "image_url": "",
+            "ingredients": "Not specified on main detail page",
+            "description": "",
+            "directions": "",
+            "safety_warning": "",
+            "important_information": "",
+            "bullet_points": [],
+            "specs": {},
+            "url": source_url
+        }
+
     soup = BeautifulSoup(html_content, 'lxml') if 'lxml' in html_content else BeautifulSoup(html_content, 'html.parser')
     currency_symbol = detect_currency(source_url, html_content)
     
     # 1. Title
     title = ""
-    title_elem = soup.select_one("#productTitle, #title span, h1#title")
+    title_elem = soup.select_one("#productTitle, #title span, h1#title, span#productTitle, #productTitle_feature_div span")
     if title_elem:
         title = title_elem.get_text(strip=True)
+    if not title:
+        h1_elem = soup.select_one("h1")
+        if h1_elem and "about this item" not in h1_elem.get_text(strip=True).lower():
+            title = h1_elem.get_text(strip=True)
+    if not title and soup.title:
+        raw_page_title = soup.title.get_text(strip=True)
+        # Clean Amazon page title suffixes (e.g. "DaranEner 600W ... : Amazon.co.za: Garden")
+        cleaned_page_title = re.split(r'\s*[:|]\s*Amazon\.', raw_page_title, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if cleaned_page_title and "robot check" not in cleaned_page_title.lower() and "page not found" not in cleaned_page_title.lower():
+            title = cleaned_page_title
     if not title:
         title = extract_title_from_url(source_url)
         
@@ -198,21 +270,21 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
     price = ""
     original_price = ""
     
-    price_elem = soup.select_one(".a-price .a-offscreen, #priceblock_ourprice, #priceblock_dealprice, #corePrice_feature_div .a-offscreen, .apexPriceToPay .a-offscreen")
-    if price_elem:
-        price = price_elem.get_text(strip=True)
+    price_elem = soup.select_one(".a-price .a-offscreen, #corePriceDisplay_desktop_feature_div .a-offscreen, #corePrice_feature_div .a-offscreen, #priceblock_ourprice, #priceblock_dealprice, .apexPriceToPay .a-offscreen, #price_inside_buybox")
+    if price_elem and price_elem.get_text(strip=True):
+        price = clean_price_display(price_elem.get_text(strip=True))
     else:
         whole = soup.select_one(".a-price-whole")
         fraction = soup.select_one(".a-price-fraction")
         if whole:
-            w_text = whole.get_text(strip=True).rstrip('.')
+            w_text = clean_price_display(whole.get_text(strip=True)).rstrip('.')
             price = f"{currency_symbol}{w_text}"
             if fraction:
-                price += f".{fraction.get_text(strip=True)}"
+                price += f".{clean_price_display(fraction.get_text(strip=True))}"
 
-    orig_price_elem = soup.select_one(".a-text-price .a-offscreen, span.basisPrice .a-offscreen, #listPrice")
+    orig_price_elem = soup.select_one(".a-text-price .a-offscreen, span.basisPrice .a-offscreen, #listPrice, .priceBlockStrikePriceString")
     if orig_price_elem:
-        original_price = orig_price_elem.get_text(strip=True)
+        original_price = clean_price_display(orig_price_elem.get_text(strip=True))
 
     # 3. Rating & Review Count
     rating = "N/A"
@@ -227,7 +299,7 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
 
     # 4. Product Image
     image_url = ""
-    img_elem = soup.select_one("#landingImage, #imgBlkFront, #main-image")
+    img_elem = soup.select_one("#landingImage, #imgBlkFront, #main-image, #main-image-container img")
     if img_elem:
         image_url = img_elem.get('data-old-hires') or img_elem.get('data-dynamic-image') or img_elem.get('src', '')
         if image_url.startswith('{'):
@@ -239,24 +311,31 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
 
     # 5. Bullet points / Key features
     bullet_points = []
-    bullet_elems = soup.select("#feature-bullets ul li span.a-list-item, #featurebullets_feature_div ul li span")
+    bullet_elems = soup.select("#feature-bullets ul li span.a-list-item, #featurebullets_feature_div ul li span, #feature-bullets li")
     for b in bullet_elems:
         text = b.get_text(strip=True)
-        if text and not text.startswith("Make sure this fits") and len(text) > 3:
+        if text and not text.startswith("Make sure this fits") and len(text) > 3 and text not in bullet_points:
             bullet_points.append(text)
 
     # 6. Technical Specifications & Details Table
     specs = {}
 
     # Variant A: Top Product Overview Table (#productOverview_feature_div)
-    overview_rows = soup.select("#productOverview_feature_div tr, #productOverview_feature_div .po-row, div[data-feature-name='productOverview'] tr, div[data-feature-name='productOverview'] .po-row")
+    overview_rows = soup.select("#productOverview_feature_div tr, div[data-feature-name='productOverview'] tr, #productOverview_feature_div .po-row")
     for row in overview_rows:
-        cols = row.select("td, th, span.po-break-word, span.a-size-base")
-        if len(cols) >= 2:
-            k = cols[0].get_text(strip=True).rstrip(":")
-            v = cols[1].get_text(strip=True).replace('\u200e', '').replace('\u200f', '')
-            if k and v and k.lower() != v.lower() and len(k) < 60:
+        tds = row.find_all(['td', 'th'])
+        if len(tds) >= 2:
+            k = tds[0].get_text(strip=True).rstrip(":")
+            v = tds[1].get_text(strip=True).replace('\u200e', '').replace('\u200f', '')
+            if k and v and len(k) < 60 and k not in specs:
                 specs[k] = v
+        else:
+            spans = row.select('.po-break-word')
+            if len(spans) >= 2:
+                k = spans[0].get_text(strip=True).rstrip(":")
+                v = spans[1].get_text(strip=True).replace('\u200e', '').replace('\u200f', '')
+                if k and v and len(k) < 60 and k not in specs:
+                    specs[k] = v
 
     # Variant B: Technical Specs & Product Details Tables
     spec_rows = soup.select("#productDetails_db_sections tr, #productDetails_techSpec_section_1 tr, #productDetails_techSpec_section_2 tr, #technicalSpecifications_section_1 tr, .prodDetTable tr, #productDetails_feature_div tr, table.a-keyvalue tr")
@@ -366,13 +445,13 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
         "url": source_url
     }
 
-def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Scrapes Amazon product page metadata using Playwright stealth browser (100% free, 0 CAPTCHA blocks)."""
+def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None, session: Optional[requests.Session] = None) -> Dict[str, Any]:
+    """Scrapes Amazon product page metadata using high-speed desktop HTTP session with Playwright stealth fallback."""
     asin = extract_asin(url_or_asin)
     if not asin and not url_or_asin.startswith("http"):
-        target_url = f"https://www.amazon.com/s?k={requests.utils.quote(url_or_asin)}"
+        target_url = f"https://www.amazon.co.za/s?k={requests.utils.quote(url_or_asin)}"
     elif asin and not url_or_asin.startswith("http"):
-        target_url = f"https://www.amazon.com/dp/{asin}"
+        target_url = f"https://www.amazon.co.za/dp/{asin}"
     else:
         target_url = url_or_asin
 
@@ -405,8 +484,8 @@ def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None) -> Dic
                     "asin": prod.get('asin', asin),
                     "title": prod.get('title', ''),
                     "brand": prod.get('brand', ''),
-                    "price": raw_price,
-                    "original_price": prod.get('buybox_winner', {}).get('rrp', {}).get('raw', ''),
+                    "price": clean_price_display(raw_price),
+                    "original_price": clean_price_display(prod.get('buybox_winner', {}).get('rrp', {}).get('raw', '')),
                     "rating": str(prod.get('rating', 'N/A')),
                     "review_count": f"{prod.get('ratings_total', 0)} ratings",
                     "image_url": prod.get('main_image', {}).get('link', ''),
@@ -422,39 +501,56 @@ def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None) -> Dic
         except Exception as e:
             print(f"Rainforest API request failed: {e}")
 
-    # Option 2: Playwright Stealth Headless Browser (100% FREE, 100% Reliable)
+    # Option 2: High-Speed Persistent HTTP Session (Ultra-Fast & Full Metadata)
+    req_session = session or get_amazon_session()
+    try:
+        resp = req_session.get(target_url, timeout=12)
+        if resp.status_code == 200:
+            is_blocked = "Robot Check" in resp.text or "api-services-support@amazon.com" in resp.text or "Type the characters you see in this image" in resp.text
+            if not is_blocked:
+                parsed = parse_amazon_html(resp.text, target_url)
+                if is_valid_amazon_product(parsed):
+                    return parsed
+    except Exception as e:
+        pass
+
+    # Option 3: Playwright Stealth Browser with Anti-Bot Automation Flags (Fallback)
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox'
+                ]
+            )
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
                 locale="en-US"
             )
             page = context.new_page()
-            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+            page.goto(target_url, wait_until="load", timeout=20000)
+            
+            # Wait for key product container if needed
+            try:
+                page.wait_for_selector("#productTitle, #title, #dp-container, #centerCol", timeout=5000)
+            except Exception:
+                pass
+                
             html_content = page.content()
             browser.close()
 
             if html_content and "api-services-support@amazon.com" not in html_content:
                 parsed = parse_amazon_html(html_content, target_url)
-                if parsed.get("title") and parsed.get("title") != target_url:
+                if is_valid_amazon_product(parsed):
                     return parsed
     except Exception as pw_err:
-        print(f"Playwright fetch fallback to HTTP: {pw_err}")
+        pass
 
-    # Option 3: Fallback standard HTTP request
-    try:
-        headers = get_random_headers()
-        response = requests.get(target_url, headers=headers, timeout=12)
-        if response.status_code == 200 and "api-services-support@amazon.com" not in response.text:
-            parsed = parse_amazon_html(response.text, target_url)
-            if parsed.get("title") and parsed.get("title") != target_url:
-                return parsed
-    except Exception as e:
-        print(f"HTTP fetch warning for {target_url}: {e}")
-
-    # Fallback: Extract clean metadata from URL slug & ASIN
+    # Option 4: Parse with fallback metadata if available
     fallback_title = extract_title_from_url(target_url) or (f"Amazon Product ({asin})" if asin else "Amazon Product")
     currency = detect_currency(target_url)
     
@@ -462,25 +558,18 @@ def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None) -> Dic
         "asin": asin or "N/A",
         "title": fallback_title,
         "brand": fallback_title.split()[0] if fallback_title else "Generic",
-        "price": f"{currency}129.99" if currency == "R" else "$29.99",
+        "price": "Price unavailable",
         "original_price": "",
-        "rating": "4.5 out of 5 stars",
-        "review_count": "Verified Purchaser Rating",
-        "availability": "In Stock",
-        "image_url": "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=500&q=80",
-        "description": "Extracted product details.",
-        "directions": "Apply as directed on label.",
-        "safety_warning": "For external use only.",
+        "rating": "N/A",
+        "review_count": "0 reviews",
+        "availability": "Unknown",
+        "image_url": "",
+        "description": "",
+        "directions": "",
+        "safety_warning": "",
         "important_information": "",
-        "bullet_points": [
-            f"Extracted from product URL: {target_url}",
-            "Hydrating & Hygiene formulation"
-        ],
-        "specs": {
-            "Product Type": "Personal Care",
-            "ASIN": asin or "N/A",
-            "Source Domain": urlparse(target_url).netloc
-        },
+        "bullet_points": [],
+        "specs": {},
         "url": target_url
     }
 
@@ -511,23 +600,31 @@ def batch_fetch_amazon_products(inputs: List[str], api_key: Optional[str] = None
 
     print(f"[*] Extracting metadata for {total} unique Amazon product(s){filter_info}...\n")
     import sys
+    session = get_amazon_session()
 
     for idx, item in enumerate(cleaned_inputs, 1):
         try:
-            prod = fetch_amazon_product(item, api_key=api_key)
+            prod = fetch_amazon_product(item, api_key=api_key, session=session)
+            if not is_valid_amazon_product(prod):
+                print(f"  [{idx}/{total}] [SKIPPED]: [{prod.get('asin')}] Placeholder / unreadable product details.")
+                sys.stdout.flush()
+                continue
+
             raw_price = prod.get('price', '')
             num_price = parse_price_number(raw_price)
 
             # Price Filter Enforcement
-            if max_price is not None and num_price is not None and num_price > max_price:
-                print(f"  [{idx}/{total}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:40]}... (Price {raw_price} > max {max_price})")
-                sys.stdout.flush()
-                continue
+            if max_price is not None:
+                if num_price is None or num_price > max_price:
+                    print(f"  [{idx}/{total}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:40]}... (Price '{raw_price}' > max {max_price})")
+                    sys.stdout.flush()
+                    continue
 
-            if min_price is not None and num_price is not None and num_price < min_price:
-                print(f"  [{idx}/{total}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:40]}... (Price {raw_price} < min {min_price})")
-                sys.stdout.flush()
-                continue
+            if min_price is not None:
+                if num_price is None or num_price < min_price:
+                    print(f"  [{idx}/{total}] [SKIPPED]: [{prod.get('asin')}] {prod.get('title')[:40]}... (Price '{raw_price}' < min {min_price})")
+                    sys.stdout.flush()
+                    continue
 
             results.append(prod)
             
@@ -544,6 +641,6 @@ def batch_fetch_amazon_products(inputs: List[str], api_key: Optional[str] = None
             print(f"  [{idx}/{total}] Failed for {item}: {e}")
             sys.stdout.flush()
             
-        time.sleep(0.3)
+        time.sleep(0.2)
         
     return results
