@@ -26,6 +26,8 @@ urls.txt
 *.json
 *.md
 !README.md
+!CONTRIBUTING.md
+!.github/**/*.md
 !examples/*.json
 
 # Environment Variables & Secrets

@@ -13,8 +13,10 @@ from scraper.amazon_scraper import (
     parse_price_number,
     extract_asin,
     get_amazon_session,
-    is_valid_amazon_product
+    is_valid_amazon_product,
+    collect_amazon_urls
 )
+from scraper.stores import resolve_scraper_for_url, get_store_scraper, list_supported_stores
 from scraper.takealot_scraper import fetch_takealot_product, search_takealot_product_urls, extract_plid
 from exporter.data_exporter import export_all_metadata
 
@@ -443,7 +445,10 @@ def main():
                             continue
                         seen_watch_ids.add(unique_key)
                         
-                        if "takealot.com" in u:
+                        scraper = resolve_scraper_for_url(u)
+                        if scraper:
+                            products.append(scraper.fetch_product(u, api_key=args.api_key))
+                        elif "takealot.com" in u:
                             products.append(fetch_takealot_product(u))
                         else:
                             products.append(fetch_amazon_product(u, api_key=args.api_key, session=session))
@@ -502,7 +507,10 @@ def main():
             continue
         seen_direct_ids.add(unique_key)
         
-        if "takealot.com" in item:
+        scraper = resolve_scraper_for_url(item)
+        if scraper:
+            products.append(scraper.fetch_product(item, api_key=args.api_key))
+        elif "takealot.com" in item:
             products.append(fetch_takealot_product(item))
         else:
             products.append(fetch_amazon_product(item, api_key=args.api_key, session=session))

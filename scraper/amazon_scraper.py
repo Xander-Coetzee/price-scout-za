@@ -644,3 +644,68 @@ def batch_fetch_amazon_products(inputs: List[str], api_key: Optional[str] = None
         time.sleep(0.2)
         
     return results
+
+def collect_amazon_urls(query: str, domain: str = "amazon.co.za", max_price: Optional[float] = None, min_price: Optional[float] = None, target_count: int = 25, seen_ids: Optional[set] = None) -> List[str]:
+    """Navigates Amazon search pages and collects unique candidate product links."""
+    if seen_ids is None:
+        seen_ids = set()
+
+    refinement_param = ""
+    if max_price is not None and min_price is not None:
+        min_cents = int(min_price * 100)
+        max_cents = int(max_price * 100)
+        refinement_param = f"&refinements=p_36%3A{min_cents}-{max_cents}"
+    elif max_price is not None:
+        max_cents = int(max_price * 100)
+        refinement_param = f"&refinements=p_36%3A-{max_cents}"
+    elif min_price is not None:
+        min_cents = int(min_price * 100)
+        refinement_param = f"&refinements=p_36%3A{min_cents}-"
+
+    urls = []
+    page_num = 1
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+
+            while len(urls) < target_count and page_num <= 20:
+                search_url = f"https://www.{domain}/s?k={query.replace(' ', '+')}&page={page_num}{refinement_param}"
+                try:
+                    page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_selector('a[href*="/dp/"]', timeout=8000)
+
+                    link_elems = page.query_selector_all('a[href*="/dp/"], a[href*="/gp/product/"]')
+                    new_count = 0
+                    for l in link_elems:
+                        href = l.get_attribute('href')
+                        if href:
+                            if href.startswith('/'):
+                                href = f"https://www.{domain}{href}"
+                            clean = unwrap_amazon_url(href)
+                            asin = extract_asin(clean) or clean
+                            if clean and asin not in seen_ids and clean not in urls:
+                                urls.append(clean)
+                                new_count += 1
+                                if len(urls) >= target_count:
+                                    break
+
+                    if new_count == 0:
+                        break
+                    page_num += 1
+                except Exception:
+                    break
+
+            browser.close()
+    except Exception as e:
+        print(f"[!] Amazon search error: {e}")
+
+    return urls
+
