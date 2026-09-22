@@ -21,7 +21,7 @@ def export_to_json_file(products: List[Dict[str, Any]], filepath: str = "scraped
         "metadata": {
             "scanned_at": datetime.now().isoformat(),
             "total_products": len(products),
-            "tool": "E-Commerce Product Metadata Scraper v2.5 (Amazon & Takealot)"
+            "tool": "PriceScout-ZA v1.0.0 (Unified South African E-Commerce Scraper)"
         },
         "products": products
     }

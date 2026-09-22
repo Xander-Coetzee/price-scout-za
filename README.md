@@ -1,6 +1,6 @@
-# 🇿🇦 South African E-Commerce Product Metadata Scraper & Price Comparison Engine
+# 🇿🇦 PriceScout-ZA: E-Commerce Product Metadata Scraper & Price Comparison Engine
 
-[![CI Test Suite](https://github.com/Xander-Coetzee/amazon-takealot-product-scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/Xander-Coetzee/amazon-takealot-product-scraper/actions/workflows/ci.yml)
+[![CI Test Suite](https://github.com/Xander-Coetzee/price-scout-za/actions/workflows/ci.yml/badge.svg)](https://github.com/Xander-Coetzee/price-scout-za/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -42,7 +42,7 @@ Built with **Python**, **Playwright**, **BeautifulSoup4**, **FastAPI**, and opti
 ## 📁 Repository Architecture
 
 ```
-amazon-takealot-product-scraper/
+price-scout-za/
 │
 ├── cli.py                        # Multi-query CLI with store routing, price filtering & rollover
 ├── app.py                        # FastAPI Web Dashboard Application
@@ -81,8 +81,8 @@ amazon-takealot-product-scraper/
 
 ### 1. Installation
 ```bash
-git clone https://github.com/Xander-Coetzee/amazon-takealot-product-scraper.git
-cd amazon-takealot-product-scraper
+git clone https://github.com/Xander-Coetzee/price-scout-za.git
+cd price-scout-za
 
 python -m venv venv
 # Windows:

@@ -382,7 +382,7 @@ def run_multi_store_search(queries: Union[List[str], str], limit: int = 10, sour
     return valid_products
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Store Product Metadata Scraper & Auto URL Collector (Amazon & Takealot)")
+    parser = argparse.ArgumentParser(description="PriceScout-ZA: Unified South African E-Commerce Scraper Engine (Amazon SA & Takealot)")
     parser.add_argument("-u", "--urls", nargs="+", help="Product URLs to scrape (Amazon or Takealot)")
     parser.add_argument("-f", "--file-input", type=str, help="Text file containing list of product URLs (one per line)")
     parser.add_argument("-s", "--search", nargs="+", help="One or more search prompts (e.g. --search 'whey' 'creatine' or --search 'whey, creatine')")

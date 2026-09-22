@@ -1,17 +1,17 @@
-# Contributing to Amazon & Takealot Product Scraper 🇿🇦
-
+# Contributing to PriceScout-ZA 🇿🇦
+ 
 Thank you for your interest in contributing! This project is the premier open-source South African e-commerce scraping, price comparison, and metadata extraction toolkit.
-
+ 
 We welcome all contributions—from adding new store scrapers (Makro, Wootware, Bob Shop, etc.) to improving DOM extractors, optimizing anti-bot resilience, and building new export formats.
-
+ 
 ---
-
+ 
 ## Quick Start: Development Setup
-
+ 
 ### 1. Fork & Clone
 ```bash
-git clone https://github.com/<your-username>/amazon-takealot-product-scraper.git
-cd amazon-takealot-product-scraper
+git clone https://github.com/<your-username>/price-scout-za.git
+cd price-scout-za
 ```
 
 ### 2. Create Virtual Environment
