@@ -1,13 +1,13 @@
-# Contributing to PriceScout-ZA 🇿🇦
- 
-Thank you for your interest in contributing! This project is the premier open-source South African e-commerce scraping, price comparison, and metadata extraction toolkit.
- 
+# Contributing to PriceScout-ZA
+
+Thank you for your interest in contributing! This project is an open-source South African e-commerce scraping, price comparison, and metadata extraction toolkit.
+
 We welcome all contributions—from adding new store scrapers (Makro, Wootware, Bob Shop, etc.) to improving DOM extractors, optimizing anti-bot resilience, and building new export formats.
- 
+
 ---
- 
+
 ## Quick Start: Development Setup
- 
+
 ### 1. Fork & Clone
 ```bash
 git clone https://github.com/<your-username>/price-scout-za.git
@@ -37,7 +37,7 @@ python -m unittest discover tests
 
 ---
 
-## 🚀 How to Add a New Store Plugin (in 3 Simple Steps)
+## How to Add a New Store Plugin (in 3 Simple Steps)
 
 Adding support for another South African or international store (e.g. Makro, Wootware, Evetech, Checkers Sixty60, Bob Shop) is designed to be straightforward and modular:
 
@@ -86,11 +86,11 @@ _STORE_REGISTRY = {
 }
 ```
 
-Add a unit test in `tests/test_scrapers.py` confirming URL resolution and submit your PR!
+Add a unit test in `tests/test_scrapers.py` confirming URL resolution and submit your PR.
 
 ---
 
-## 🧪 Running Tests
+## Running Tests
 
 Before submitting a Pull Request, make sure all tests pass:
 ```bash
@@ -104,11 +104,11 @@ flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
 ---
 
-## 📦 Pull Request Guidelines
+## Pull Request Guidelines
 
 1. **Descriptive Branch Names**: Use `feat/add-makro-scraper` or `fix/amazon-price-regex`.
-2. **Atomic Commits**: Follow [Conventional Commits](https://www.conventionalcommits.org/) (e.g. `feat(store): add Wootware hardware scraper`, `fix(takealot): update title selector`).
+2. **Atomic Commits**: Follow Conventional Commits (e.g. `feat(store): add Wootware hardware scraper`, `fix(takealot): update title selector`).
 3. **Keep it Free**: Do not introduce mandatory paid API keys or commercial proxies. Fallbacks to free tools (Playwright / requests) must always be preserved.
 4. **Clean Code**: Remove unnecessary debug print statements and temporary dump files before committing.
 
-Thank you for helping make South African e-commerce open and accessible! 🚀
+Thank you for helping make South African e-commerce open and accessible.
