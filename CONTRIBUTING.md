@@ -110,5 +110,6 @@ flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 2. **Atomic Commits**: Follow Conventional Commits (e.g. `feat(store): add Wootware hardware scraper`, `fix(takealot): update title selector`).
 3. **Keep it Free**: Do not introduce mandatory paid API keys or commercial proxies. Fallbacks to free tools (Playwright / requests) must always be preserved.
 4. **Clean Code**: Remove unnecessary debug print statements and temporary dump files before committing.
+5. **Code of Conduct**: All participants are expected to adhere to the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 Thank you for helping make South African e-commerce open and accessible.

@@ -125,7 +125,7 @@ Adding a new store takes 3 steps:
 2. Implement `search()`, `fetch_product()`, and `extract_identifier()`.
 3. Register your class in `scraper/stores/__init__.py`.
 
-See the [`CONTRIBUTING.md`](CONTRIBUTING.md) guide for complete details and pull request guidelines.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for complete details and pull request guidelines. Please also review our [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) and [`SECURITY.md`](SECURITY.md).
 
 ---
 
