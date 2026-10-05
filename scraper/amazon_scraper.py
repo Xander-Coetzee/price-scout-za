@@ -455,17 +455,93 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
         if inc_spec:
             whats_in_the_box = [s.strip() for s in inc_spec.split(",") if s.strip()]
 
+    # 12. Quantitative Numbers & Currency
+    price_num = parse_price_number(price)
+    orig_price_num = parse_price_number(original_price)
+    discount_pct = round(((orig_price_num - price_num) / orig_price_num) * 100) if (orig_price_num and price_num and orig_price_num > price_num) else None
+    currency_code = "ZAR" if (".co.za" in source_url or "R" in currency_symbol) else ("USD" if "$" in currency_symbol else currency_symbol)
+
+    rating_num = None
+    if rating:
+        r_match = re.search(r'\d+(?:[.,]\d+)?', rating)
+        if r_match:
+            try:
+                rating_num = float(r_match.group(0).replace(',', '.'))
+            except ValueError:
+                pass
+
+    reviews_num = 0
+    if review_count:
+        rc_digits = re.sub(r'[^\d]', '', review_count)
+        if rc_digits:
+            try:
+                reviews_num = int(rc_digits)
+            except ValueError:
+                pass
+
+    # 13. Gallery Images (All High-Res Angles)
+    gallery_images = []
+    if image_url:
+        gallery_images.append(image_url)
+    for img in soup.select('#altImages img, #imageBlock img'):
+        src = img.get('src', '')
+        if src and 'media-amazon' in src and 'sprite' not in src and 'transparent' not in src:
+            clean_hi_res = re.sub(r'\._[A-Z0-9_,]+_\.', '.', src)
+            if clean_hi_res not in gallery_images:
+                gallery_images.append(clean_hi_res)
+
+    # 14. Seller & Fulfillment Trust Signals
+    seller = ""
+    shipper = ""
+    m_div = soup.select_one('#merchantInfoFeature_feature_div, #merchant-info, #tabular-buybox')
+    if m_div:
+        spans = [s.get_text(strip=True) for s in m_div.select('span, a') if s.get_text(strip=True)]
+        if len(spans) >= 2:
+            seller = spans[1]
+            shipper = spans[2] if len(spans) >= 3 else spans[1]
+
+    is_prime = bool(soup.select_one('.s-prime, i.a-icon-prime, span.a-icon-prime, #prime-detail, #bbop-sxs-prime-badge'))
+
+    return_policy = ""
+    return_elem = soup.select_one('#productSupportAndReturnPolicy_feature_div, #iconfarmv2_feature_div')
+    if return_elem:
+        for span in return_elem.select('span, a'):
+            st = span.get_text(strip=True)
+            if 'return' in st.lower() or 'day' in st.lower():
+                return_policy = st
+                break
+
+    seller_info = {
+        "seller": seller or brand or "Amazon.co.za",
+        "shipper": shipper or "Amazon.co.za",
+        "is_prime": is_prime,
+        "return_policy": return_policy or "Standard 30-day return policy"
+    }
+
+    # 15. Market Popularity / Social Proof
+    sp_div = soup.select_one('#socialProofingAsinFaceout_feature_div, #social-proofing-faceout-title-tk_bought')
+    social_proof = sp_div.get_text(strip=True) if sp_div else ""
+
     product_data = {
         "asin": asin,
         "title": title or (f"Amazon Product ({asin})" if asin else "Amazon Product"),
         "brand": brand,
         "price": price or "Price unavailable",
+        "price_numeric": price_num,
+        "currency": currency_code,
         "original_price": original_price,
+        "original_price_numeric": orig_price_num,
+        "discount_percentage": discount_pct,
         "rating": rating,
+        "rating_numeric": rating_num,
         "review_count": review_count,
+        "review_count_numeric": reviews_num,
         "availability": availability,
+        "social_proof": social_proof,
+        "seller_info": seller_info,
         "breadcrumbs": breadcrumbs,
         "image_url": image_url,
+        "gallery_images": gallery_images,
         "ingredients": ingredients,
         "description": description,
         "aplus_content": aplus_content,

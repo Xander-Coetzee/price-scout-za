@@ -198,18 +198,56 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
     if box_spec:
         whats_in_the_box = [s.strip() for s in box_spec.split("\n") if s.strip()]
 
+    # Quantitative Numbers & Currency
+    price_num = parse_price_number(price)
+    orig_price_num = parse_price_number(original_price)
+    discount_pct = round(((orig_price_num - price_num) / orig_price_num) * 100) if (orig_price_num and price_num and orig_price_num > price_num) else None
+
+    rating_num = None
+    if rating:
+        r_match = re.search(r'\d+(?:[.,]\d+)?', rating)
+        if r_match:
+            try:
+                rating_num = float(r_match.group(0).replace(',', '.'))
+            except ValueError:
+                pass
+
+    reviews_num = 0
+    if review_count:
+        rc_digits = re.sub(r'[^\d]', '', review_count)
+        if rc_digits:
+            try:
+                reviews_num = int(rc_digits)
+            except ValueError:
+                pass
+
+    seller_info = {
+        "seller": specs.get("Seller") or "Takealot",
+        "shipper": "Takealot",
+        "is_prime": False,
+        "return_policy": "Takealot 30-day return policy"
+    }
+
     product_data = {
         "source": "Takealot",
         "plid": plid,
         "title": title or f"Takealot Product ({plid})",
         "brand": brand or "Takealot",
         "price": price,
+        "price_numeric": price_num,
+        "currency": "ZAR",
         "original_price": original_price,
+        "original_price_numeric": orig_price_num,
+        "discount_percentage": discount_pct,
         "rating": rating,
+        "rating_numeric": rating_num,
         "review_count": review_count,
+        "review_count_numeric": reviews_num,
         "availability": "In stock",
+        "seller_info": seller_info,
         "breadcrumbs": breadcrumbs,
         "image_url": image_url,
+        "gallery_images": [image_url] if image_url else [],
         "ingredients": ingredients or "Not specified on main detail page",
         "description": description,
         "whats_in_the_box": whats_in_the_box,
