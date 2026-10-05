@@ -56,5 +56,50 @@ class TestStoreRegistry(unittest.TestCase):
         unknown = resolve_scraper_for_url("https://www.unknown-domain.com/item/123")
         self.assertIsNone(unknown)
 
+class TestPackageClassification(unittest.TestCase):
+    def test_refill_twin_pack_detection_and_mismatch_alert(self):
+        from scraper.package_classifier import classify_package_integrity
+        product = {
+            "title": "Raid, Electric Unit, Odourless, Mosquito Killer, Liquid Refill, Twin Pack, 2 x 33 ml",
+            "description": "The unit plugs into a standard outlet and heats up the liquid repellent... Unit automatically shuts off after 12 hours.",
+            "bullet_points": ["Plugs into standard outlet", "Automatic shut-off after 12 hours"],
+            "specs": {"Item Volume": "66 Milliliters", "Unit Count": "2 count", "Item Form": "Oil"}
+        }
+        res = classify_package_integrity(product)
+        self.assertEqual(res["package_type"], "Refill Pack")
+        self.assertTrue(res["is_refill_only"])
+        self.assertFalse(res["device_included"])
+        self.assertTrue(res["requires_base_device"])
+        self.assertEqual(res["pack_quantity"], "2 x 33 ml")
+        self.assertEqual(len(res["listing_integrity_alerts"]), 1)
+        self.assertIn("VENDOR_DESCRIPTION_MISMATCH", res["listing_integrity_alerts"][0])
+        self.assertIn("REFILL-ONLY", res["listing_integrity_alerts"][0])
+
+    def test_starter_kit_detection(self):
+        from scraper.package_classifier import classify_package_integrity
+        product = {
+            "title": "Raid Essentials Liquid Electric Mosquito Killer Primary Unit with Refill",
+            "description": "Plugs into any standard outlet and comes with a refill.",
+            "specs": {"Unit Count": "1 count"}
+        }
+        res = classify_package_integrity(product)
+        self.assertEqual(res["package_type"], "Starter Kit (Device + Refill)")
+        self.assertFalse(res["is_refill_only"])
+        self.assertTrue(res["device_included"])
+        self.assertFalse(res["requires_base_device"])
+        self.assertEqual(len(res["listing_integrity_alerts"]), 0)
+
+    def test_standalone_device_detection(self):
+        from scraper.package_classifier import classify_package_integrity
+        product = {
+            "title": "Electric Mosquito Killer USBLamp",
+            "description": "USB-powered mosquito lamp trap",
+            "specs": {"Material": "Plastic"}
+        }
+        res = classify_package_integrity(product)
+        self.assertEqual(res["package_type"], "Standalone Device")
+        self.assertTrue(res["device_included"])
+        self.assertFalse(res["is_refill_only"])
+
 if __name__ == "__main__":
     unittest.main()

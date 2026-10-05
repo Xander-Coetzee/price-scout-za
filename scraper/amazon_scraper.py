@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, unquote
+from scraper.package_classifier import classify_package_integrity
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -248,6 +249,14 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
     soup = BeautifulSoup(html_content, 'lxml') if 'lxml' in html_content else BeautifulSoup(html_content, 'html.parser')
     currency_symbol = detect_currency(source_url, html_content)
     
+    # 0. Breadcrumbs / Category hierarchy
+    breadcrumbs = []
+    crumb_elems = soup.select("#wayfinding-breadcrumbs_feature_div a, .a-breadcrumb a")
+    for cr in crumb_elems:
+        c_text = cr.get_text(strip=True)
+        if c_text and c_text not in breadcrumbs:
+            breadcrumbs.append(c_text)
+
     # 1. Title
     title = ""
     title_elem = soup.select_one("#productTitle, #title span, h1#title, span#productTitle, #productTitle_feature_div span")
@@ -425,7 +434,28 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
         
     asin = extract_asin(source_url) or ""
 
-    return {
+    # 10. A+ Enhanced Brand / Manufacturer Content
+    aplus_content = ""
+    aplus_elem = soup.select_one("#aplus_feature_div, .aplus-v2, #dpx-aplus-product-description_feature_div")
+    if aplus_elem:
+        raw_aplus = aplus_elem.get_text(separator=' ', strip=True)
+        raw_aplus = re.sub(r'\s+', ' ', raw_aplus).strip()
+        if len(raw_aplus) > 15:
+            aplus_content = raw_aplus
+
+    # 11. What's in the Box / Included Components
+    whats_in_the_box = []
+    box_elems = soup.select("#whatIsInTheBox_feature_div li, #includedComponents_feature_div li, .whats-in-the-box li")
+    for be in box_elems:
+        btxt = be.get_text(strip=True)
+        if btxt and btxt not in whats_in_the_box:
+            whats_in_the_box.append(btxt)
+    if not whats_in_the_box:
+        inc_spec = specs.get("Included Components") or specs.get("Package Contents")
+        if inc_spec:
+            whats_in_the_box = [s.strip() for s in inc_spec.split(",") if s.strip()]
+
+    product_data = {
         "asin": asin,
         "title": title or (f"Amazon Product ({asin})" if asin else "Amazon Product"),
         "brand": brand,
@@ -434,9 +464,12 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
         "rating": rating,
         "review_count": review_count,
         "availability": availability,
+        "breadcrumbs": breadcrumbs,
         "image_url": image_url,
         "ingredients": ingredients,
         "description": description,
+        "aplus_content": aplus_content,
+        "whats_in_the_box": whats_in_the_box,
         "directions": directions,
         "safety_warning": safety_warning,
         "important_information": important_information,
@@ -444,6 +477,20 @@ def parse_amazon_html(html_content: str, source_url: str = "") -> Dict[str, Any]
         "specs": specs,
         "url": source_url
     }
+
+    # 12. Package Details & Listing Integrity Analysis
+    pkg_analysis = classify_package_integrity(product_data)
+    product_data["package_details"] = {
+        "package_type": pkg_analysis["package_type"],
+        "is_refill_only": pkg_analysis["is_refill_only"],
+        "device_included": pkg_analysis["device_included"],
+        "requires_base_device": pkg_analysis["requires_base_device"],
+        "pack_quantity": pkg_analysis["pack_quantity"],
+        "net_volume_or_weight": pkg_analysis["net_volume_or_weight"]
+    }
+    product_data["listing_integrity_alerts"] = pkg_analysis["listing_integrity_alerts"]
+
+    return product_data
 
 def fetch_amazon_product(url_or_asin: str, api_key: Optional[str] = None, session: Optional[requests.Session] = None) -> Dict[str, Any]:
     """Scrapes Amazon product page metadata using high-speed desktop HTTP session with Playwright stealth fallback."""

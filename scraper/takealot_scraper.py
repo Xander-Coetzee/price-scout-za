@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List, Optional
 from bs4 import BeautifulSoup
 from scraper.amazon_scraper import parse_price_number, extract_ingredients
+from scraper.package_classifier import classify_package_integrity
 
 def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
     """Scrapes complete product metadata and technical specs from Takealot.com product page."""
@@ -183,7 +184,21 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
     if plid_match:
         plid = plid_match.group(0)
 
-    return {
+    # Breadcrumbs / Categories
+    breadcrumbs = []
+    crumb_elems = soup.select('.breadcrumbs-module_breadcrumbs_2bA1p a, .breadcrumbs a, a[href*="/all?department="]')
+    for cr in crumb_elems:
+        c_text = cr.get_text(strip=True)
+        if c_text and c_text not in breadcrumbs and c_text.lower() != "home":
+            breadcrumbs.append(c_text)
+
+    # What's in the Box
+    whats_in_the_box = []
+    box_spec = specs.get("What's in the box") or specs.get("What’s in the box")
+    if box_spec:
+        whats_in_the_box = [s.strip() for s in box_spec.split("\n") if s.strip()]
+
+    product_data = {
         "source": "Takealot",
         "plid": plid,
         "title": title or f"Takealot Product ({plid})",
@@ -193,9 +208,11 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
         "rating": rating,
         "review_count": review_count,
         "availability": "In stock",
+        "breadcrumbs": breadcrumbs,
         "image_url": image_url,
         "ingredients": ingredients or "Not specified on main detail page",
         "description": description,
+        "whats_in_the_box": whats_in_the_box,
         "directions": directions,
         "safety_warning": safety_warning,
         "important_information": "",
@@ -203,6 +220,19 @@ def fetch_takealot_product(target_url: str) -> Dict[str, Any]:
         "specs": specs,
         "url": target_url
     }
+
+    pkg_analysis = classify_package_integrity(product_data)
+    product_data["package_details"] = {
+        "package_type": pkg_analysis["package_type"],
+        "is_refill_only": pkg_analysis["is_refill_only"],
+        "device_included": pkg_analysis["device_included"],
+        "requires_base_device": pkg_analysis["requires_base_device"],
+        "pack_quantity": pkg_analysis["pack_quantity"],
+        "net_volume_or_weight": pkg_analysis["net_volume_or_weight"]
+    }
+    product_data["listing_integrity_alerts"] = pkg_analysis["listing_integrity_alerts"]
+
+    return product_data
 
 def extract_plid(url_or_input: str) -> Optional[str]:
     """Extract PLID identifier from Takealot URL or string (e.g. PLID73601470)."""
