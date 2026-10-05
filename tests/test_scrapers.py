@@ -66,14 +66,14 @@ class TestPackageClassification(unittest.TestCase):
             "specs": {"Item Volume": "66 Milliliters", "Unit Count": "2 count", "Item Form": "Oil"}
         }
         res = classify_package_integrity(product)
-        self.assertEqual(res["package_type"], "Refill Pack")
+        self.assertEqual(res["package_type"], "Refill / Replacement Consumable")
         self.assertTrue(res["is_refill_only"])
         self.assertFalse(res["device_included"])
         self.assertTrue(res["requires_base_device"])
         self.assertEqual(res["pack_quantity"], "2 x 33 ml")
         self.assertEqual(len(res["listing_integrity_alerts"]), 1)
         self.assertIn("VENDOR_DESCRIPTION_MISMATCH", res["listing_integrity_alerts"][0])
-        self.assertIn("REFILL-ONLY", res["listing_integrity_alerts"][0])
+        self.assertIn("REFILL / REPLACEMENT", res["listing_integrity_alerts"][0])
 
     def test_starter_kit_detection(self):
         from scraper.package_classifier import classify_package_integrity
@@ -83,7 +83,7 @@ class TestPackageClassification(unittest.TestCase):
             "specs": {"Unit Count": "1 count"}
         }
         res = classify_package_integrity(product)
-        self.assertEqual(res["package_type"], "Starter Kit (Device + Refill)")
+        self.assertEqual(res["package_type"], "Starter Kit / Complete Bundle")
         self.assertFalse(res["is_refill_only"])
         self.assertTrue(res["device_included"])
         self.assertFalse(res["requires_base_device"])
@@ -97,9 +97,33 @@ class TestPackageClassification(unittest.TestCase):
             "specs": {"Material": "Plastic"}
         }
         res = classify_package_integrity(product)
-        self.assertEqual(res["package_type"], "Standalone Device")
+        self.assertEqual(res["package_type"], "Standalone Device / Appliance")
         self.assertTrue(res["device_included"])
         self.assertFalse(res["is_refill_only"])
+
+    def test_bare_tool_detection(self):
+        from scraper.package_classifier import classify_package_integrity
+        product = {
+            "title": "DeWalt 20V MAX Cordless Circular Saw, Bare Tool (DCS391B)",
+            "description": "5150 RPM motor. Battery and charger sold separately."
+        }
+        res = classify_package_integrity(product)
+        self.assertEqual(res["package_type"], "Bare Tool / Body Only (No Battery/Lens)")
+        self.assertTrue(res["device_included"])
+        self.assertEqual(len(res["listing_integrity_alerts"]), 1)
+        self.assertIn("BARE_UNIT_WARNING", res["listing_integrity_alerts"][0])
+
+    def test_phone_case_accessory_detection(self):
+        from scraper.package_classifier import classify_package_integrity
+        product = {
+            "title": "Spigen Ultra Hybrid Protective Case for iPhone 15 Pro Max",
+            "description": "Designed for iPhone 15 Pro with Super Retina XDR OLED display."
+        }
+        res = classify_package_integrity(product)
+        self.assertEqual(res["package_type"], "Accessory / Case / Mount")
+        self.assertFalse(res["device_included"])
+        self.assertEqual(len(res["listing_integrity_alerts"]), 1)
+        self.assertIn("ACCESSORY_ONLY_WARNING", res["listing_integrity_alerts"][0])
 
 if __name__ == "__main__":
     unittest.main()
